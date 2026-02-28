@@ -1,0 +1,16 @@
+# github.com/indeedhat/automux
+# config version
+version = 1
+
+session_id = "mattress"
+
+window "Editor" {
+    exec = "vim"
+    focus = true
+}
+
+window "Shell" {
+    split {}
+}
+
+# vi: ft=hcl
