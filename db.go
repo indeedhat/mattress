@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 )
@@ -20,6 +21,11 @@ const (
 const (
 	compactDbName = "./tmp.mtrsgb"
 	backupDbName  = "./tmp.mtrsbk"
+)
+
+const (
+	keyMaxSize = math.MaxUint8
+	valMaxSize = 4083 // page size - header - single slot
 )
 
 // DB implements a bare bones append only file backed key value store with an in memory index
@@ -124,7 +130,6 @@ func (d *DB) Get(key string) (string, error) {
 }
 
 func (d *DB) getByOffset(offset int64, fh *os.File) (string, error) {
-
 	lenSection := io.NewSectionReader(d.fh, offset, 9)
 	lenReader := bufio.NewReader(lenSection)
 
