@@ -15,9 +15,9 @@ func TestDecodeAndReadPage(t *testing.T) {
 	page, err := decodePage([4096]byte(pageData))
 	require.Nil(t, err)
 
-	require.Equal(t, uint64(123), page.header.PageId)
-	require.Equal(t, uint16(0x13), page.header.Flags)
-	require.Equal(t, uint16(2), page.header.SlotCount)
+	require.Equal(t, uint64(123), page.Header.PageId)
+	require.Equal(t, uint16(0x13), page.Header.Flags)
+	require.Equal(t, uint16(2), page.Header.SlotCount)
 	require.Len(t, page.slots, 2)
 
 	require.Equal(t, Slot{
