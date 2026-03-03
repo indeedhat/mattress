@@ -189,7 +189,7 @@ func (p *Page) FreeSpace() int {
 // to disk
 func (p *Page) Encode() [pageSize]byte {
 	p.mux.RLock()
-	defer p.mux.RLock()
+	defer p.mux.RUnlock()
 
 	// write header
 	binary.LittleEndian.PutUint64(p.data[:8], p.Header.PageId)
@@ -233,7 +233,7 @@ func decodePage(data [pageSize]byte) (*Page, error) {
 	}
 
 	// read slots
-	for i := 0; i < int(p.Header.SlotCount); i++ {
+	for range int(p.Header.SlotCount) {
 		slot := Slot{}
 
 		if err := binary.Read(reader, binary.LittleEndian, &slot.offset); err != nil {
@@ -252,7 +252,6 @@ func decodePage(data [pageSize]byte) (*Page, error) {
 
 		slot.alive = alive == 1
 		p.slots = append(p.slots, slot)
-		p.Header.SlotCount = uint16(len(p.slots))
 		if slot.offset < uint16(p.insertOffset) {
 			p.insertOffset = int(slot.offset)
 		}
@@ -357,11 +356,8 @@ func (m *PageManager) doStore(page *Page) error {
 	return nil
 }
 
-// create creates a new page entry and pre emptively stores it to file
-func (m *PageManager) create(id uint64) (*Page, error) {
-	m.mux.Lock()
-	defer m.mux.Unlock()
-
+// doCreate creates a new page entry and pre emptively stores it to file
+func (m *PageManager) doCreate(id uint64) (*Page, error) {
 	page := NewPage(id, 0x0)
 	if err := m.doStore(page); err != nil {
 		return nil, err
@@ -384,7 +380,7 @@ func (m *PageManager) FetchWithSpace(n int) (*Page, error) {
 
 	nextId := len(m.freeList)
 
-	return m.create(uint64(nextId))
+	return m.doCreate(uint64(nextId))
 }
 
 // Iterate is a rangefunc that returns all page entries in the database
@@ -400,8 +396,7 @@ func (m *PageManager) Iterator() func(yield func(*Page, error) bool) {
 		}
 
 		pageCount := stat.Size() / pageSize
-
-		for i := int64(0); i < pageCount; i++ {
+		for i := range pageCount {
 			if !yield(m.doFetchFromFile(uint64(i))) {
 				return
 			}

@@ -70,19 +70,14 @@ func (d *DB) Open(path string) error {
 		return err
 	}
 
-	stat, err := d.fh.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat file: %w", err)
-	}
-
-	if stat.Size() == 0 {
-		return nil
-	}
-
 	d.pages = NewPageManager(d.fh)
 	d.index, err = d.rebuildIndex()
 
-	return err
+	if err != nil {
+		return fmt.Errorf("index rebuild failed: %w", err)
+	}
+
+	return nil
 }
 
 // Close closes the underlying file handler for the write log
@@ -145,7 +140,7 @@ func (d *DB) Get(key string) (string, error) {
 
 	entry, found := d.index[key]
 	if !found {
-		return "", fmt.Errorf("key %s does not exists in index", key)
+		return "", fmt.Errorf("entry %s not found", key)
 	}
 
 	page, err := d.pages.Fetch(entry.page)
@@ -168,7 +163,7 @@ func (d *DB) Delete(key string) error {
 
 	entry, found := d.index[key]
 	if !found {
-		return fmt.Errorf("key %s does not exists in index", key)
+		return fmt.Errorf("entry %s not found", key)
 	}
 
 	page, err := d.pages.Fetch(entry.page)
@@ -202,10 +197,13 @@ func (d *DB) rebuildIndex() (map[string]indexEntry, error) {
 		for slotId := 0; slotId < int(page.Header.SlotCount); slotId++ {
 			record, err := page.Read(slotId)
 			if err != nil {
+				if errors.Is(err, ErrInvalidSlot) {
+					continue
+				}
 				return nil, err
 			}
 
-			index[record.Value()] = indexEntry{
+			index[record.Key()] = indexEntry{
 				page.Header.PageId,
 				uint16(slotId),
 			}
