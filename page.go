@@ -285,16 +285,11 @@ type PageManager struct {
 	// TODO: page caching
 }
 
-func NewPageManager(fh *os.File) (*PageManager, error) {
-	stat, err := fh.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
-	}
-
+func NewPageManager(fh *os.File) *PageManager {
 	return &PageManager{
 		fh:       fh,
 		freeList: make(map[uint64]int),
-	}, nil
+	}
 }
 
 // Fetch will attempt to fetch a page by its id
@@ -314,7 +309,7 @@ func (m *PageManager) doFetchFromFile(id uint64) (*Page, error) {
 
 	offset := id * pageSize
 	if int64(offset+pageSize) < stat.Size() {
-		return nil, fmt.Errorf("page '%s' lies outside of the bounds of the file", id)
+		return nil, fmt.Errorf("page '%d' lies outside of the bounds of the file", id)
 	}
 
 	if _, err := m.fh.Seek(int64(offset), io.SeekStart); err != nil {

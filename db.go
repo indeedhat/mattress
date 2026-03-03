@@ -1,11 +1,8 @@
 package mattress
 
 import (
-	"bufio"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"sync"
@@ -82,10 +79,7 @@ func (d *DB) Open(path string) error {
 		return nil
 	}
 
-	if d.pages, err = NewPageManager(d.fh); err != nil {
-		return err
-	}
-
+	d.pages = NewPageManager(d.fh)
 	d.index, err = d.rebuildIndex()
 
 	return err
@@ -116,7 +110,7 @@ func (d *DB) Put(key, value string) error {
 	var err error
 	var slotId int
 	rec := encodeRecord(key, value)
-	
+
 	if loc, found := d.index[key]; found {
 		if page, err = d.pages.Fetch(loc.page); err != nil {
 			return fmt.Errorf("failed to fetch page containing existing record: %w", err)
@@ -151,7 +145,7 @@ func (d *DB) Get(key string) (string, error) {
 
 	entry, found := d.index[key]
 	if !found {
-		return fmt.Errorf("key %s does not exists in index", key)
+		return "", fmt.Errorf("key %s does not exists in index", key)
 	}
 
 	page, err := d.pages.Fetch(entry.page)
@@ -159,7 +153,7 @@ func (d *DB) Get(key string) (string, error) {
 		return "", fmt.Errorf("entry %s not found", key)
 	}
 
-	rec, err :=  page.Read(int(entry.slot))
+	rec, err := page.Read(int(entry.slot))
 	if err != nil {
 		return "", fmt.Errorf("entry %s not found", key)
 	}
@@ -179,11 +173,11 @@ func (d *DB) Delete(key string) error {
 
 	page, err := d.pages.Fetch(entry.page)
 	if err != nil {
-		return "", fmt.Errorf("entry %s not found", key)
+		return fmt.Errorf("entry %s not found", key)
 	}
 
 	if err := page.Delete(int(entry.slot)); err != nil {
-		return "", fmt.Errorf("failed to delete entry: %w", err)
+		return fmt.Errorf("failed to delete entry: %w", err)
 	}
 
 	delete(d.index, key)
@@ -198,7 +192,7 @@ func (d *DB) Compact() error {
 // writeToLog is the shared functionaly for presisting entries to the disk
 
 func (d *DB) rebuildIndex() (map[string]indexEntry, error) {
-	index := make(map[string]int64)
+	index := make(map[string]indexEntry)
 
 	for page, err := range d.pages.Iterator() {
 		if err != nil {
@@ -213,7 +207,7 @@ func (d *DB) rebuildIndex() (map[string]indexEntry, error) {
 
 			index[record.Value()] = indexEntry{
 				page.Header.PageId,
-				slotId
+				uint16(slotId),
 			}
 		}
 	}
