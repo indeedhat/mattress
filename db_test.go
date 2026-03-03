@@ -4,7 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +63,6 @@ func TestBasicFunctionality(t *testing.T) {
 	// index gets rebuilt after close/open
 	require.Nil(t, db.Close())
 	require.Nil(t, db.Open(dbPath))
-	spew.Dump(db.index)
 	require.Equal(t, 2, db.Len())
 
 	v1, err = db.Get("key1")

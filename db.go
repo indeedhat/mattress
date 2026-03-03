@@ -175,6 +175,10 @@ func (d *DB) Delete(key string) error {
 		return fmt.Errorf("failed to delete entry: %w", err)
 	}
 
+	if err := d.pages.Store(page); err != nil {
+		return fmt.Errorf("failed to store record: %w", err)
+	}
+
 	delete(d.index, key)
 
 	return nil
@@ -183,8 +187,6 @@ func (d *DB) Delete(key string) error {
 func (d *DB) Compact() error {
 	panic("not implemented")
 }
-
-// writeToLog is the shared functionaly for presisting entries to the disk
 
 func (d *DB) rebuildIndex() (map[string]indexEntry, error) {
 	index := make(map[string]indexEntry)
