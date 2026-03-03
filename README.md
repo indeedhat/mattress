@@ -6,7 +6,7 @@ A very bare bones key value store with a disk backed write only log and in memor
 
 ## Roadmap
 - [x] make storage page based
-- [ ] implement a page cache
+- [ ] implement a page cache (buffer pool)
 - [ ] allow records to span multiple pages
 - [ ] implement WAL
 - [ ] implement B+tree index

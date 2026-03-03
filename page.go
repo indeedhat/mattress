@@ -1,12 +1,8 @@
 package mattress
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
-	"io"
-	"os"
 	"sync"
 )
 
@@ -21,6 +17,12 @@ var (
 	ErrInvalidSlot     = errors.New("invalid page slot")
 	ErrInvalidPageSize = errors.New("invalid page size")
 )
+
+type PageId uint64
+
+func (i PageId) V() uint64 {
+	return uint64(i)
+}
 
 type Record []byte
 
@@ -49,7 +51,7 @@ func (s Slot) IsAlive() bool {
 }
 
 type PageHeader struct {
-	PageId    uint64
+	PageId    PageId
 	Flags     uint16
 	SlotCount uint16
 }
@@ -63,7 +65,7 @@ type Page struct {
 }
 
 // NewPage creates a blank page instance with the provided id/flags
-func NewPage(id uint64, flags uint16) *Page {
+func NewPage(id PageId, flags uint16) *Page {
 	return &Page{
 		Header: PageHeader{
 			PageId: id,
@@ -192,7 +194,7 @@ func (p *Page) Encode() [pageSize]byte {
 	defer p.mux.RUnlock()
 
 	// write header
-	binary.LittleEndian.PutUint64(p.data[:8], p.Header.PageId)
+	binary.LittleEndian.PutUint64(p.data[:8], p.Header.PageId.V())
 	binary.LittleEndian.PutUint16(p.data[8:10], uint16(p.Header.Flags))
 	binary.LittleEndian.PutUint16(p.data[10:12], uint16(len(p.slots)))
 
@@ -212,54 +214,6 @@ func (p *Page) Encode() [pageSize]byte {
 	return p.data
 }
 
-func decodePage(data [pageSize]byte) (*Page, error) {
-	reader := bytes.NewReader(data[:])
-	p := &Page{
-		Header:       PageHeader{},
-		slots:        []Slot{},
-		data:         data,
-		insertOffset: pageSize,
-	}
-
-	// read header
-	if err := binary.Read(reader, binary.LittleEndian, &p.Header.PageId); err != nil {
-		return nil, fmt.Errorf("failed to read page id: %w", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &p.Header.Flags); err != nil {
-		return nil, fmt.Errorf("failed to read flags: %w", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &p.Header.SlotCount); err != nil {
-		return nil, fmt.Errorf("failed to read flags: %w", err)
-	}
-
-	// read slots
-	for range int(p.Header.SlotCount) {
-		slot := Slot{}
-
-		if err := binary.Read(reader, binary.LittleEndian, &slot.offset); err != nil {
-			return nil, fmt.Errorf("failed to read slot offset: %w", err)
-		}
-		if err := binary.Read(reader, binary.LittleEndian, &slot.cap); err != nil {
-			return nil, fmt.Errorf("failed to read slot cap: %w", err)
-		}
-		if err := binary.Read(reader, binary.LittleEndian, &slot.len); err != nil {
-			return nil, fmt.Errorf("failed to read slot len: %w", err)
-		}
-		alive, err := reader.ReadByte()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read slot alive status: %w", err)
-		}
-
-		slot.alive = alive == 1
-		p.slots = append(p.slots, slot)
-		if slot.offset < uint16(p.insertOffset) {
-			p.insertOffset = int(slot.offset)
-		}
-	}
-
-	return p, nil
-}
-
 func encodeRecord(key, value string) []byte {
 	keySize := uint8(len([]byte(key)))
 	valSize := uint32(len([]byte(value)))
@@ -273,133 +227,4 @@ func encodeRecord(key, value string) []byte {
 	buf = append(buf, []byte(value)...)
 
 	return buf
-}
-
-type PageManager struct {
-	fh *os.File
-	// freeList keeps track of the free space in each page so we have an in memory way
-	// for finding a page to insert the data to
-	freeList map[uint64]int
-	mux      sync.RWMutex
-	// TODO: page caching
-}
-
-func NewPageManager(fh *os.File) *PageManager {
-	return &PageManager{
-		fh:       fh,
-		freeList: make(map[uint64]int),
-	}
-}
-
-// Fetch will attempt to fetch a page by its id
-func (m *PageManager) Fetch(id uint64) (*Page, error) {
-	m.mux.RLock()
-	defer m.mux.RUnlock()
-
-	return m.doFetchFromFile(id)
-}
-
-// doFetchFromFile fetches a page entry from file by its id
-func (m *PageManager) doFetchFromFile(id uint64) (*Page, error) {
-	stat, err := m.fh.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
-	}
-
-	offset := id * pageSize
-	if int64(offset+pageSize) < stat.Size() {
-		return nil, fmt.Errorf("page '%d' lies outside of the bounds of the file", id)
-	}
-
-	if _, err := m.fh.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to seek to page offset: %w", err)
-	}
-
-	buf := [pageSize]byte{}
-	if readBytes, err := m.fh.Read(buf[:]); err != nil {
-		return nil, fmt.Errorf("failed to read page from file: %w", err)
-	} else if readBytes != pageSize {
-		return nil, errors.New("failed to read whole page from file")
-	}
-
-	page, err := decodePage(buf)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, found := m.freeList[page.Header.PageId]; !found {
-		m.freeList[page.Header.PageId] = page.FreeSpace()
-	}
-
-	return page, nil
-}
-
-// Store will attempt to write a page to disk
-func (m *PageManager) Store(page *Page) error {
-	m.mux.Lock()
-	defer m.mux.Unlock()
-
-	return m.doStore(page)
-}
-
-// doStore stores a page to file
-func (m *PageManager) doStore(page *Page) error {
-	offset := page.Header.PageId * pageSize
-	data := page.Encode()
-
-	if _, err := m.fh.WriteAt(data[:], int64(offset)); err != nil {
-		return fmt.Errorf("failed to write page to file: %w", err)
-	}
-
-	m.freeList[page.Header.PageId] = page.FreeSpace()
-
-	return nil
-}
-
-// doCreate creates a new page entry and pre emptively stores it to file
-func (m *PageManager) doCreate(id uint64) (*Page, error) {
-	page := NewPage(id, 0x0)
-	if err := m.doStore(page); err != nil {
-		return nil, err
-	}
-
-	return page, nil
-}
-
-// FetchWithSpace attempts to fetch the first available page with enough space
-// to store the provided size
-func (m *PageManager) FetchWithSpace(n int) (*Page, error) {
-	m.mux.Lock()
-	defer m.mux.Unlock()
-
-	for id, size := range m.freeList {
-		if size >= n {
-			return m.doFetchFromFile(id)
-		}
-	}
-
-	nextId := len(m.freeList)
-
-	return m.doCreate(uint64(nextId))
-}
-
-// Iterate is a rangefunc that returns all page entries in the database
-func (m *PageManager) Iterator() func(yield func(*Page, error) bool) {
-	return func(yield func(p *Page, err error) bool) {
-		m.mux.Lock()
-		defer m.mux.Unlock()
-
-		stat, err := m.fh.Stat()
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-
-		pageCount := stat.Size() / pageSize
-		for i := range pageCount {
-			if !yield(m.doFetchFromFile(uint64(i))) {
-				return
-			}
-		}
-	}
 }

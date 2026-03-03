@@ -25,7 +25,7 @@ const (
 )
 
 type indexEntry struct {
-	page uint64
+	page PageId
 	slot uint16
 }
 
@@ -38,10 +38,14 @@ type indexEntry struct {
 // uint16 but i have it set to uint32 as i plan on later allowing records to span
 // multiple pages with a max size of 1MB
 type DB struct {
-	fh    *os.File
-	pages *PageManager
+	fsm  *Fsm
+	pool *BufferPool
+	disk *DiskManager
+
 	index map[string]indexEntry
-	mux   sync.RWMutex
+
+	mux sync.RWMutex
+	wg  sync.WaitGroup
 }
 
 func NewDB() *DB {
@@ -55,24 +59,30 @@ func (d *DB) Len() int {
 
 // Open opens the database from a file and rebuilds the in memory index
 func (d *DB) Open(path string) error {
-	var err error
-
-	if d.fh != nil {
-		return errors.New("database already open")
-	}
-
 	d.mux.Lock()
 	defer d.mux.Unlock()
 
+	var err error
+
+	if d.pool != nil {
+		return errors.New("database already open")
+	}
+
+	d.fsm = NewFsm()
 	d.index = make(map[string]indexEntry)
 
-	if d.fh, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644); err != nil {
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
 		return err
 	}
 
-	d.pages = NewPageManager(d.fh)
-	d.index, err = d.rebuildIndex()
+	d.disk, err = NewDiskManager(fh)
+	if err != nil {
+		return err
+	}
 
+	d.pool = NewBufferPool(d.disk)
+	d.index, err = d.rebuildIndex()
 	if err != nil {
 		return fmt.Errorf("index rebuild failed: %w", err)
 	}
@@ -85,13 +95,16 @@ func (d *DB) Close() error {
 	d.mux.Lock()
 	defer d.mux.Unlock()
 
-	err := d.fh.Close()
+	d.wg.Wait()
+
+	err := d.pool.Close()
 	if err != nil {
 		return err
 	}
 
-	d.fh = nil
-	d.pages = nil
+	d.index = nil
+	d.pool = nil
+	d.fsm = nil
 
 	return nil
 }
@@ -100,34 +113,52 @@ func (d *DB) Close() error {
 func (d *DB) Put(key, value string) error {
 	d.mux.Lock()
 	defer d.mux.Unlock()
+	d.wg.Add(1)
+	defer d.wg.Done()
 
 	var page *Page
 	var err error
 	var slotId int
 	rec := encodeRecord(key, value)
 
+	// TODO: this really need some kind of transaction so we don't lose data when moving to a new page
 	if loc, found := d.index[key]; found {
-		if page, err = d.pages.Fetch(loc.page); err != nil {
+		if page, err = d.pool.Fetch(loc.page); err != nil {
 			return fmt.Errorf("failed to fetch page containing existing record: %w", err)
 		}
 
-		if slotId, err = page.Update(int(loc.slot), rec); err != nil {
-			return fmt.Errorf("failed to store record: %w", err)
-		}
-	} else {
-		if page, err = d.pages.FetchWithSpace(len(rec)); err != nil {
-			return fmt.Errorf("failed to fetch page to save record: %w", err)
-		}
+		if slotId, err = page.Update(int(loc.slot), rec); errors.Is(err, ErrPageFull) {
+			if err := page.Delete(int(loc.slot)); err != nil {
+				return fmt.Errorf("could not relocate record to new page: %s", err)
+			}
 
-		if slotId, err = page.Insert(rec); err != nil {
+			delete(d.index, key)
+		} else if err != nil {
 			return fmt.Errorf("failed to store record: %w", err)
 		}
 	}
 
-	if err := d.pages.Store(page); err != nil {
+	pageId, found := d.fsm.FindSpace(len(rec))
+	if !found {
+		page, err = d.pool.Create()
+	} else {
+		page, err = d.pool.Fetch(pageId)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to fetch page to save record: %w", err)
+	}
+
+	var dirty bool
+	defer func() {
+		d.pool.Release(page, dirty)
+	}()
+
+	if slotId, err = page.Insert(rec); err != nil {
 		return fmt.Errorf("failed to store record: %w", err)
 	}
 
+	dirty = true
 	d.index[key] = indexEntry{page.Header.PageId, uint16(slotId)}
 
 	return nil
@@ -137,16 +168,19 @@ func (d *DB) Put(key, value string) error {
 func (d *DB) Get(key string) (string, error) {
 	d.mux.RLock()
 	defer d.mux.RUnlock()
+	d.wg.Add(1)
+	defer d.wg.Done()
 
 	entry, found := d.index[key]
 	if !found {
 		return "", fmt.Errorf("entry %s not found", key)
 	}
 
-	page, err := d.pages.Fetch(entry.page)
+	page, err := d.pool.Fetch(entry.page)
 	if err != nil {
 		return "", fmt.Errorf("entry %s not found", key)
 	}
+	defer d.pool.Release(page, false)
 
 	rec, err := page.Read(int(entry.slot))
 	if err != nil {
@@ -160,25 +194,28 @@ func (d *DB) Get(key string) (string, error) {
 func (d *DB) Delete(key string) error {
 	d.mux.Lock()
 	defer d.mux.Unlock()
+	d.wg.Add(1)
+	defer d.wg.Done()
 
 	entry, found := d.index[key]
 	if !found {
 		return fmt.Errorf("entry %s not found", key)
 	}
 
-	page, err := d.pages.Fetch(entry.page)
+	page, err := d.pool.Fetch(entry.page)
 	if err != nil {
 		return fmt.Errorf("entry %s not found", key)
 	}
+	var dirty bool
+	defer func() {
+		d.pool.Release(page, dirty)
+	}()
 
 	if err := page.Delete(int(entry.slot)); err != nil {
 		return fmt.Errorf("failed to delete entry: %w", err)
 	}
 
-	if err := d.pages.Store(page); err != nil {
-		return fmt.Errorf("failed to store record: %w", err)
-	}
-
+	dirty = true
 	delete(d.index, key)
 
 	return nil
@@ -191,10 +228,12 @@ func (d *DB) Compact() error {
 func (d *DB) rebuildIndex() (map[string]indexEntry, error) {
 	index := make(map[string]indexEntry)
 
-	for page, err := range d.pages.Iterator() {
+	for page, err := range d.disk.Iterator() {
 		if err != nil {
 			return nil, err
 		}
+
+		d.fsm.Set(page.Header.PageId, uint16(page.FreeSpace()))
 
 		for slotId := 0; slotId < int(page.Header.SlotCount); slotId++ {
 			record, err := page.Read(slotId)
