@@ -1,4 +1,4 @@
-package main
+package mattress
 
 import (
 	"bytes"
@@ -22,6 +22,17 @@ var (
 
 type Record []byte
 
+func (r Record) Key() string {
+	klen := uint8(r[0])
+	return string(r[5 : 5+klen])
+}
+
+func (r Record) Value() string {
+	klen := uint8(r[0])
+	vlen := binary.LittleEndian.Uint32(r[1:5])
+	return string(r[5+klen : 5+uint32(klen)+vlen])
+}
+
 type Slot struct {
 	offset uint16
 	cap    uint16
@@ -36,28 +47,46 @@ type PageHeader struct {
 }
 
 type Page struct {
-	header    PageHeader
-	slots     []Slot
-	data      [pageSize]byte
-	freeSpace int
-	mux       sync.RWMutex
+	header       PageHeader
+	slots        []Slot
+	data         [pageSize]byte
+	insertOffset int
+	mux          sync.RWMutex
+}
+
+func NewPage(id uint64, flags uint16) *Page {
+	return &Page{
+		header: PageHeader{
+			PageId: id,
+			Flags:  flags,
+		},
+		data:         [pageSize]byte{},
+		insertOffset: pageSize,
+	}
 }
 
 func (p *Page) Insert(record Record) (int, error) {
 	p.mux.Lock()
 	defer p.mux.Unlock()
+	return p.doInsert(record)
+}
 
+// doInsert does the actual work of inserting a new record in the page,
+// the reason for its existence is because it is shared functionality
+// between both the Insert and Update method, this allows update to call it without
+// hitting a locked mutex
+func (p *Page) doInsert(record Record) (int, error) {
 	recLen := len(record)
 
 	if !p.HasFreeSpace(recLen) {
 		return -1, ErrPageFull
 	}
 
-	p.freeSpace -= len(record)
-	copy(p.data[p.freeSpace:], record)
+	p.insertOffset -= len(record)
+	copy(p.data[p.insertOffset:p.insertOffset+len(record)], record)
 
 	p.slots = append(p.slots, Slot{
-		offset: uint16(p.freeSpace),
+		offset: uint16(p.insertOffset),
 		len:    uint16(recLen),
 		cap:    uint16(recLen),
 		alive:  true,
@@ -75,7 +104,7 @@ func (p *Page) Read(slotId int) (Record, error) {
 	}
 
 	slot := p.slots[slotId]
-	return p.data[slot.offset:slot.len], nil
+	return p.data[slot.offset : slot.offset+slot.len], nil
 }
 
 func (p *Page) Update(slotId int, record Record) (int, error) {
@@ -90,28 +119,28 @@ func (p *Page) Update(slotId int, record Record) (int, error) {
 	recLen := uint16(len(record))
 
 	if recLen <= slot.cap {
-		copy(p.data[slot.offset:], record)
+		copy(p.data[slot.offset:slot.offset+recLen], record)
 		slot.len = recLen
 		return slotId, nil
 	}
 
 	// if the slot is the last in the list then it can be extended without having to compact other
 	// records
-	if slotId == len(p.slots)-1 && recLen <= slot.cap+uint16(p.freeSpace) {
-		p.freeSpace -= int(recLen - slot.cap)
-		copy(p.data[p.freeSpace:], record)
+	if slotId == len(p.slots)-1 && p.HasFreeSpace(int(recLen-slot.cap)) {
+		p.insertOffset -= int(recLen - slot.cap)
+		copy(p.data[p.insertOffset:p.insertOffset+int(recLen)], record)
 		slot.len = recLen
 		slot.cap = recLen
-		slot.offset = uint16(p.freeSpace)
+		slot.offset = uint16(p.insertOffset)
 		return slotId, nil
 	}
 
-	slotId, err := p.Insert(record)
-	if err != nil {
-		slot.alive = false
+	newSlotId, err := p.doInsert(record)
+	if err == nil {
+		p.slots[slotId].alive = false
 	}
 
-	return slotId, err
+	return newSlotId, err
 }
 
 func (p *Page) Delete(slotId int) error {
@@ -127,7 +156,7 @@ func (p *Page) Delete(slotId int) error {
 }
 
 func (p *Page) HasFreeSpace(n int) bool {
-	return p.freeSpace >= n+slotSize
+	return p.insertOffset >= n+headerSize+slotSize*int(p.header.SlotCount+1)
 }
 
 func (p *Page) Encode() [pageSize]byte {
@@ -158,9 +187,10 @@ func (p *Page) Encode() [pageSize]byte {
 func decodePage(data [pageSize]byte) (*Page, error) {
 	reader := bytes.NewReader(data[:])
 	p := &Page{
-		header: PageHeader{},
-		slots:  []Slot{},
-		data:   data,
+		header:       PageHeader{},
+		slots:        []Slot{},
+		data:         data,
+		insertOffset: pageSize,
 	}
 
 	// read header
@@ -194,9 +224,10 @@ func decodePage(data [pageSize]byte) (*Page, error) {
 
 		slot.alive = alive == 1
 		p.slots = append(p.slots, slot)
+		if slot.offset < uint16(p.insertOffset) {
+			p.insertOffset = int(slot.offset)
+		}
 	}
-
-	p.freeSpace = pageSize - headerSize - slotSize*int(p.header.SlotCount)
 
 	return p, nil
 }

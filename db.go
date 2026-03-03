@@ -1,4 +1,4 @@
-package main
+package mattress
 
 import (
 	"bufio"
@@ -25,7 +25,7 @@ const (
 
 const (
 	keyMaxSize = math.MaxUint8
-	valMaxSize = 4083 // page size - header - single slot
+	valMaxSize = pageSize - headerSize - slotSize - math.MaxUint8
 )
 
 // DB implements a bare bones append only file backed key value store with an in memory index
