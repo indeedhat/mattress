@@ -67,38 +67,43 @@ func TestUpdateExistingRecords(t *testing.T) {
 	page, err := decodePage([4096]byte(pageData))
 	require.Nil(t, err)
 
-	// lets try the unhappy paths first
-	slot, err := page.Update(1, encodeRecord("too large to fit", strings.Repeat("A", 4096)))
-	require.Equal(t, -1, slot)
-	require.Equal(t, err, ErrPageFull)
+	t.Run("values that are too large get rejected", func(t *testing.T) {
+		slot, err := page.Update(1, encodeRecord("too large to fit", strings.Repeat("A", 4096)))
+		require.Equal(t, -1, slot)
+		require.Equal(t, err, ErrPageFull)
 
-	slot, err = page.Update(5, encodeRecord("too large to fit", strings.Repeat("A", 4096)))
-	require.Equal(t, -1, slot)
-	require.Equal(t, err, ErrInvalidSlot)
+		slot, err = page.Update(5, encodeRecord("too large to fit", strings.Repeat("A", 4096)))
+		require.Equal(t, -1, slot)
+		require.Equal(t, err, ErrInvalidSlot)
+	})
 
-	// updating the last record with a longer value should just grow the record (slot id's start from 0)
-	slot, err = page.Update(1, encodeRecord("key 2", "This key has a space in it, and now its longer"))
-	require.Nil(t, err)
-	require.Equal(t, 1, slot)
+	t.Run("last slot can have its capacity increased", func(t *testing.T) {
+		// updating the last record with a longer value should just grow the record (slot id's start from 0)
+		slot, err := page.Update(1, encodeRecord("key 2", "This key has a space in it, and now its longer"))
+		require.Nil(t, err)
+		require.Equal(t, 1, slot)
 
-	r2, err := page.Read(1)
-	require.Nil(t, err)
-	require.Equal(t, "key 2", r2.Key())
-	require.Equal(t, "This key has a space in it, and now its longer", r2.Value())
+		r2, err := page.Read(1)
+		require.Nil(t, err)
+		require.Equal(t, "key 2", r2.Key())
+		require.Equal(t, "This key has a space in it, and now its longer", r2.Value())
+	})
 
-	// updating any other record with a longer value will mark teh record as dead and create a new one
-	slot, err = page.Update(0, encodeRecord("key1", "This is an entirely new slot in the page"))
-	require.Nil(t, err)
-	require.Equal(t, 2, slot)
+	t.Run("entries not in the last slot get moved when size increases", func(t *testing.T) {
+		// updating any other record with a longer value will mark teh record as dead and create a new one
+		slot, err := page.Update(0, encodeRecord("key1", "This is an entirely new slot in the page"))
+		require.Nil(t, err)
+		require.Equal(t, 2, slot)
 
-	r1, err := page.Read(0)
-	require.Nil(t, r1)
-	require.Equal(t, ErrInvalidSlot, err)
+		r1, err := page.Read(0)
+		require.Nil(t, r1)
+		require.Equal(t, ErrInvalidSlot, err)
 
-	r3, err := page.Read(2)
-	require.Nil(t, err)
-	require.Equal(t, "key1", r3.Key())
-	require.Equal(t, "This is an entirely new slot in the page", r3.Value())
+		r3, err := page.Read(2)
+		require.Nil(t, err)
+		require.Equal(t, "key1", r3.Key())
+		require.Equal(t, "This is an entirely new slot in the page", r3.Value())
+	})
 
 	expectedData, err := os.ReadFile("./fixtures/updated.page")
 	require.Nil(t, err)
