@@ -3,17 +3,36 @@ package mattress
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 )
 
-type DiskManager struct {
+type PageGenerator func(yield func(*Page, error) bool)
+
+type StorageManager interface {
+	// Close closes down the disk manager freeing up any underlying file handles
+	// or connections
+	Close() error
+	// PageCount gets the total number of pages stored on disk
+	PageCount() (int, error)
+	// AllocatePage returns the next page id to be used to extend the file
+	AllocatePage() PageId
+	// WritePage persists a page to its storage medium
+	WritePage(page *Page) error
+	// ReadPage reads a page from its storage medium
+	ReadPage(id PageId) (*Page, error)
+	// Iterate is a rangefunc that returns all page entries in the database
+	Iterator() PageGenerator
+}
+
+type LocalStorageManager struct {
 	fh         *os.File
 	nextPageId PageId
 }
 
-func NewDiskManager(fh *os.File) (*DiskManager, error) {
-	d := &DiskManager{fh: fh}
+func NewLocalStorageManager(fh *os.File) (StorageManager, error) {
+	d := &LocalStorageManager{fh: fh}
 
 	pageCount, err := d.PageCount()
 	if err != nil {
@@ -25,20 +44,20 @@ func NewDiskManager(fh *os.File) (*DiskManager, error) {
 	return d, nil
 }
 
-// Close closes down the underlying file handle
-func (d *DiskManager) Close() error {
+// Close implements StorageManager.
+func (d *LocalStorageManager) Close() error {
 	return d.fh.Close()
 }
 
-// AllocatePage returns the next page id to be used to extend the file
-func (d *DiskManager) AllocatePage() PageId {
+// AllocatePage implements StorageManager.
+func (d *LocalStorageManager) AllocatePage() PageId {
 	id := d.nextPageId
 	d.nextPageId++
 	return id
 }
 
-// PageCount gets the total number of pages stored on disk
-func (d *DiskManager) PageCount() (int, error) {
+// PageCount implements StorageManager.
+func (d *LocalStorageManager) PageCount() (int, error) {
 	stat, err := d.fh.Stat()
 	if err != nil {
 		return 0, err
@@ -47,8 +66,8 @@ func (d *DiskManager) PageCount() (int, error) {
 	return int(stat.Size() / pageSize), nil
 }
 
-// WritePage writes a page to disk
-func (d *DiskManager) WritePage(page *Page) error {
+// WritePage implements StorageManager.
+func (d *LocalStorageManager) WritePage(page *Page) error {
 	// TODO: later I will want to check the write size to make sure it matches
 	// the expected value and handle partial writes
 	data := page.Encode()
@@ -56,8 +75,8 @@ func (d *DiskManager) WritePage(page *Page) error {
 	return err
 }
 
-// ReadPage reads a page from disk
-func (d *DiskManager) ReadPage(id PageId) (*Page, error) {
+// ReadPage implements StorageManager.
+func (d *LocalStorageManager) ReadPage(id PageId) (*Page, error) {
 	data := [pageSize]byte{}
 	// TODO: handle partial reads
 	if _, err := d.fh.ReadAt(data[:], int64(id)*pageSize); err != nil {
@@ -67,8 +86,8 @@ func (d *DiskManager) ReadPage(id PageId) (*Page, error) {
 	return decodePage(data)
 }
 
-// Iterate is a rangefunc that returns all page entries in the database
-func (d *DiskManager) Iterator() func(yield func(*Page, error) bool) {
+// Iterator implements StorageManager.
+func (d *LocalStorageManager) Iterator() PageGenerator {
 	return func(yield func(p *Page, err error) bool) {
 		for i := range d.nextPageId {
 			if !yield(d.ReadPage(i)) {
@@ -77,6 +96,50 @@ func (d *DiskManager) Iterator() func(yield func(*Page, error) bool) {
 		}
 	}
 }
+
+var _ StorageManager = (*LocalStorageManager)(nil)
+
+type InMemoryStorageManager struct {
+	nexPageId PageId
+}
+
+func NewInMemoryStorageManager() (StorageManager, error) {
+	return &InMemoryStorageManager{}, nil
+}
+
+// AllocatePage implements StorageManager.
+func (i *InMemoryStorageManager) AllocatePage() PageId {
+	id := i.nexPageId
+	i.nexPageId++
+	return id
+}
+
+// Close implements StorageManager.
+func (i *InMemoryStorageManager) Close() error {
+	return nil
+}
+
+// Iterator implements StorageManager.
+func (i *InMemoryStorageManager) Iterator() PageGenerator {
+	return func(yield func(p *Page, err error) bool) {}
+}
+
+// PageCount implements StorageManager.
+func (i *InMemoryStorageManager) PageCount() (int, error) {
+	return int(i.nexPageId), nil
+}
+
+// ReadPage implements StorageManager.
+func (i *InMemoryStorageManager) ReadPage(id PageId) (*Page, error) {
+	return nil, errors.New("ReadPage should never be called when using an in memory store")
+}
+
+// WritePage implements StorageManager.
+func (i *InMemoryStorageManager) WritePage(page *Page) error {
+	return nil
+}
+
+var _ StorageManager = (*InMemoryStorageManager)(nil)
 
 // decodePage decodes the raw byte array into a Page object
 func decodePage(data [pageSize]byte) (*Page, error) {

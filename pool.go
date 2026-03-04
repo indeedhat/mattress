@@ -5,7 +5,10 @@ import (
 	"sync"
 )
 
-const bufferPoolSize = 100
+const (
+	defaultBufferPoolSize   = 100
+	unlimitedBufferPoolSize = 0
+)
 
 type Frame struct {
 	page     *Page
@@ -14,12 +17,13 @@ type Frame struct {
 }
 
 type BufferPool struct {
-	pages map[PageId]*Frame
-	mux   sync.Mutex
-	disk  *DiskManager
+	pages    map[PageId]*Frame
+	mux      sync.Mutex
+	disk     StorageManager
+	poolSize uint64
 }
 
-func NewBufferPool(dm *DiskManager) *BufferPool {
+func NewBufferPool(dm StorageManager, poolSize uint64) *BufferPool {
 	return &BufferPool{
 		pages: make(map[PageId]*Frame),
 		disk:  dm,
@@ -72,10 +76,8 @@ func (b *BufferPool) Fetch(id PageId) (*Page, error) {
 		return f.page, nil
 	}
 
-	if len(b.pages) >= bufferPoolSize {
-		if err := b.evict(); err != nil {
-			return nil, err
-		}
+	if err := b.evict(); err != nil {
+		return nil, err
 	}
 
 	p, err := b.disk.ReadPage(id)
@@ -94,10 +96,8 @@ func (b *BufferPool) Fetch(id PageId) (*Page, error) {
 
 // Create creates a new page and returns it
 func (b *BufferPool) Create() (*Page, error) {
-	if len(b.pages) >= bufferPoolSize {
-		if err := b.evict(); err != nil {
-			return nil, err
-		}
+	if err := b.evict(); err != nil {
+		return nil, err
 	}
 
 	id := b.disk.AllocatePage()
@@ -114,6 +114,12 @@ func (b *BufferPool) Create() (*Page, error) {
 // evict removes a page from the buffer pool, if it is dirty then it will first
 // be persisted to disk
 func (b *BufferPool) evict() error {
+	// a poolSize of 0 indicates that there is no max size, everything should
+	// be kept in memory
+	if b.poolSize == 0 {
+		return nil
+	}
+
 	for id, frame := range b.pages {
 		if frame.pinCount > 0 {
 			continue

@@ -16,12 +16,9 @@ const (
 )
 
 const (
-	compactDbName = "./tmp.mtrsgb"
-	backupDbName  = "./tmp.mtrsbk"
-)
-
-const (
 	keyMaxSize = math.MaxUint8
+
+	inMemoryFilePath = ":memory:"
 )
 
 type indexEntry struct {
@@ -40,7 +37,7 @@ type indexEntry struct {
 type DB struct {
 	fsm  *Fsm
 	pool *BufferPool
-	disk *DiskManager
+	disk StorageManager
 
 	index map[string]indexEntry
 
@@ -70,18 +67,25 @@ func (d *DB) Open(path string) error {
 
 	d.fsm = NewFsm()
 	d.index = make(map[string]indexEntry)
+	var poolSize uint64
 
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if path == inMemoryFilePath {
+		d.disk, err = NewInMemoryStorageManager()
+		poolSize = unlimitedBufferPoolSize
+	} else {
+		fh, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			return err
+		}
+		d.disk, err = NewLocalStorageManager(fh)
+		poolSize = defaultBufferPoolSize
+	}
 	if err != nil {
 		return err
 	}
 
-	d.disk, err = NewDiskManager(fh)
-	if err != nil {
-		return err
-	}
+	d.pool = NewBufferPool(d.disk, poolSize)
 
-	d.pool = NewBufferPool(d.disk)
 	d.index, err = d.rebuildIndex()
 	if err != nil {
 		return fmt.Errorf("index rebuild failed: %w", err)
@@ -115,6 +119,10 @@ func (d *DB) Put(key, value string) error {
 	defer d.mux.Unlock()
 	d.wg.Add(1)
 	defer d.wg.Done()
+
+	if len([]byte(key)) > keyMaxSize {
+		return errors.New("key is too large")
+	}
 
 	var page *Page
 	var err error

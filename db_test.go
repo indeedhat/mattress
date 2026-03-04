@@ -7,16 +7,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const dbPath = "./db.mtrs"
-
-func TestBasicFunctionality(t *testing.T) {
+func TestBasicFunctionalityWithFIleStorage(t *testing.T) {
+	dbPath := "./tst.mtrs"
 	_ = os.Remove(dbPath)
-
 	db := NewDB()
-	defer db.Close()
 
 	require.Nil(t, db.Open(dbPath))
+	defer db.Close()
 
+	basicFunctionalityShared(t, db)
+
+	// index gets rebuilt after close/open
+	require.Nil(t, db.Close())
+	require.Nil(t, db.Open(dbPath))
+	require.Equal(t, 2, db.Len())
+
+	v1, err := db.Get("key1")
+	require.Nil(t, err)
+	require.Equal(t, "updated value", v1)
+
+	v2, err := db.Get("key2")
+	require.Nil(t, err)
+	require.Equal(t, "value 2 replaced", v2)
+}
+
+func TestBasicFunctionalityWithInMemoryStorage(t *testing.T) {
+	dbPath := ":memory:"
+	_ = os.Remove(dbPath)
+	db := NewDB()
+
+	require.Nil(t, db.Open(dbPath))
+	defer db.Close()
+
+	basicFunctionalityShared(t, db)
+}
+
+func basicFunctionalityShared(t *testing.T, db *DB) {
 	// setup values
 	require.Nil(t, db.Put("key1", "value 1"))
 	require.Nil(t, db.Put("key2", "value 2"))
@@ -56,19 +82,6 @@ func TestBasicFunctionality(t *testing.T) {
 
 	// can replace deleted entry
 	require.Nil(t, db.Put("key2", "value 2 replaced"))
-	v2, err = db.Get("key2")
-	require.Nil(t, err)
-	require.Equal(t, "value 2 replaced", v2)
-
-	// index gets rebuilt after close/open
-	require.Nil(t, db.Close())
-	require.Nil(t, db.Open(dbPath))
-	require.Equal(t, 2, db.Len())
-
-	v1, err = db.Get("key1")
-	require.Nil(t, err)
-	require.Equal(t, "updated value", v1)
-
 	v2, err = db.Get("key2")
 	require.Nil(t, err)
 	require.Equal(t, "value 2 replaced", v2)
