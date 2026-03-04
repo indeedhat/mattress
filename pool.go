@@ -20,10 +20,10 @@ type BufferPool struct {
 	pages    map[PageId]*Frame
 	mux      sync.Mutex
 	disk     StorageManager
-	poolSize uint64
+	poolSize int
 }
 
-func NewBufferPool(dm StorageManager, poolSize uint64) *BufferPool {
+func NewBufferPool(dm StorageManager, poolSize int) *BufferPool {
 	return &BufferPool{
 		pages: make(map[PageId]*Frame),
 		disk:  dm,
@@ -120,7 +120,7 @@ func (b *BufferPool) evict() error {
 		return nil
 	}
 
-	if b.poolSize > uint64(len(b.pages)) {
+	if b.poolSize > len(b.pages) {
 		return nil
 	}
 

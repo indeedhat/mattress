@@ -67,7 +67,7 @@ func (d *DB) Open(path string) error {
 
 	d.fsm = NewFsm()
 	d.index = make(map[string]indexEntry)
-	var poolSize uint64
+	poolSize := defaultBufferPoolSize
 
 	if path == inMemoryFilePath {
 		d.disk, err = NewInMemoryStorageManager()
@@ -78,7 +78,6 @@ func (d *DB) Open(path string) error {
 			return err
 		}
 		d.disk, err = NewLocalStorageManager(fh)
-		poolSize = defaultBufferPoolSize
 	}
 	if err != nil {
 		return err
