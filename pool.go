@@ -120,6 +120,10 @@ func (b *BufferPool) evict() error {
 		return nil
 	}
 
+	if b.poolSize > uint64(len(b.pages)) {
+		return nil
+	}
+
 	for id, frame := range b.pages {
 		if frame.pinCount > 0 {
 			continue
