@@ -190,8 +190,8 @@ func (p *Page) FreeSpace() int {
 // Encode will return a byte array representing the page that can be persisted
 // to disk
 func (p *Page) Encode() [pageSize]byte {
-	p.mux.RLock()
-	defer p.mux.RUnlock()
+	p.mux.Lock()
+	defer p.mux.Unlock()
 
 	// write header
 	binary.LittleEndian.PutUint64(p.data[:8], p.Header.PageId.V())

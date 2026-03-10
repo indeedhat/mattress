@@ -112,7 +112,9 @@ func (b *BufferPool) Create() (*Page, error) {
 }
 
 // evict removes a page from the buffer pool, if it is dirty then it will first
-// be persisted to disk
+// be persisted to storage
+//
+// evict will only remove a frame if the pool is full, otherwise it does nothing
 func (b *BufferPool) evict() error {
 	// a poolSize of 0 indicates that there is no max size, everything should
 	// be kept in memory

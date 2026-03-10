@@ -3,7 +3,6 @@ package mattress
 import (
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 )
@@ -16,7 +15,7 @@ const (
 )
 
 const (
-	keyMaxSize = math.MaxUint8
+	keyMaxSize = 128
 
 	inMemoryFilePath = ":memory:"
 )
